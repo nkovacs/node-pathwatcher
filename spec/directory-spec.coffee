@@ -14,6 +14,19 @@ describe "Directory", ->
     directory.off()
     PathWatcher.closeAllWatchers()
 
+  it "normalizes the specified path", ->
+    expect(new Directory(directory.path + path.sep + 'abc' + path.sep + '..').getBaseName()).toBe 'fixtures'
+    expect(new Directory(directory.path + path.sep + 'abc' + path.sep + '..').path.toLowerCase()).toBe directory.path.toLowerCase()
+
+    expect(new Directory(directory.path + path.sep).getBaseName()).toBe 'fixtures'
+    expect(new Directory(directory.path + path.sep).path.toLowerCase()).toBe directory.path.toLowerCase()
+
+    expect(new Directory(directory.path + path.sep + path.sep).getBaseName()).toBe 'fixtures'
+    expect(new Directory(directory.path + path.sep + path.sep).path.toLowerCase()).toBe directory.path.toLowerCase()
+
+    expect(new Directory(path.sep).getBaseName()).toBe ''
+    expect(new Directory(path.sep).path).toBe path.sep
+
   it 'returns false from isFile()', ->
     expect(directory.isFile()).toBe false
 
@@ -30,12 +43,11 @@ describe "Directory", ->
     afterEach ->
       fs.removeSync(temporaryFilePath)
 
-    it "triggers 'contents-changed' event handlers", ->
+    it "notifies ::onDidChange observers", ->
       changeHandler = null
 
       runs ->
-        changeHandler = jasmine.createSpy('changeHandler')
-        directory.on 'contents-changed', changeHandler
+        directory.onDidChange changeHandler = jasmine.createSpy('changeHandler')
         fs.writeFileSync(temporaryFilePath, '')
 
       waitsFor "first change", -> changeHandler.callCount > 0
@@ -57,18 +69,17 @@ describe "Directory", ->
       fs.removeSync(temporaryFilePath) if fs.existsSync(temporaryFilePath)
 
     it "no longer triggers events", ->
-      changeHandler = null
+      [subscription, changeHandler] = []
 
       runs ->
-        changeHandler = jasmine.createSpy('changeHandler')
-        directory.on 'contents-changed', changeHandler
+        subscription = directory.onDidChange changeHandler = jasmine.createSpy('changeHandler')
         fs.writeFileSync(temporaryFilePath, '')
 
       waitsFor "change event", -> changeHandler.callCount > 0
 
       runs ->
         changeHandler.reset()
-        directory.off()
+        subscription.dispose()
       waits 20
 
       runs -> fs.removeSync(temporaryFilePath)

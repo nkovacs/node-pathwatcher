@@ -1,75 +1,104 @@
 path = require 'path'
 
 async = require 'async'
-{Emitter} = require 'emissary'
+EmitterMixin = require('emissary').Emitter
+{Emitter, Disposable} = require 'event-kit'
 fs = require 'fs-plus'
+Grim = require 'grim'
 
 File = require './file'
 PathWatcher = require './main'
 
-# Public: Represents a directory on disk that can be watched for changes.
+# Extended: Represents a directory on disk that can be watched for changes.
 module.exports =
 class Directory
-  Emitter.includeInto(this)
+  EmitterMixin.includeInto(this)
 
   realPath: null
+  subscriptionCount: 0
+
+  ###
+  Section: Construction
+  ###
 
   # Public: Configures a new Directory instance, no files are accessed.
   #
-  # path - A {String} containing the absolute path to the directory.
-  # symlink - A {Boolean} indicating if the path is a symlink (default: false).
-  constructor: (@path, @symlink=false) ->
-    @on 'first-contents-changed-subscription-will-be-added', =>
-      # Triggered by emissary, when a new contents-changed listener attaches
-      @subscribeToNativeChangeEvents()
+  # * `directoryPath` A {String} containing the absolute path to the directory
+  # * `symlink` (optional) A {Boolean} indicating if the path is a symlink.
+  #   (default: false)
+  constructor: (directoryPath, @symlink=false) ->
+    @emitter = new Emitter
 
-    @on 'last-contents-changed-subscription-removed', =>
-      # Triggered by emissary, when the last contents-changed listener detaches
-      @unsubscribeFromNativeChangeEvents()
+    @on 'contents-changed-subscription-will-be-added', @willAddSubscription
+    @on 'contents-changed-subscription-removed', @didRemoveSubscription
+
+    if directoryPath
+      directoryPath = path.normalize(directoryPath)
+      # Remove a trailing slash
+      if directoryPath.length > 1 and directoryPath[directoryPath.length - 1] is path.sep
+        directoryPath = directoryPath.substring(0, directoryPath.length - 1)
+    @path = directoryPath
 
     @lowerCasePath = @path.toLowerCase() if fs.isCaseInsensitive()
 
-  # Public: Returns the {String} basename of the directory.
-  getBaseName: ->
-    path.basename(@path)
+  ###
+  Section: Event Subscription
+  ###
 
-  # Public: Returns the directory's symbolic path.
+  # Public: Invoke the given callback when the directory's contents change.
+  #
+  # * `callback` {Function} to be called when the directory's contents change.
+  #
+  # Returns a {Disposable} on which `.dispose()` can be called to unsubscribe.
+  onDidChange: (callback) ->
+    @willAddSubscription()
+    @trackUnsubscription(@emitter.on('did-change', callback))
+
+  willAddSubscription: =>
+    @subscribeToNativeChangeEvents() if @subscriptionCount is 0
+    @subscriptionCount++
+
+  didRemoveSubscription: =>
+    @subscriptionCount--
+    @unsubscribeFromNativeChangeEvents() if @subscriptionCount is 0
+
+  trackUnsubscription: (subscription) ->
+    new Disposable =>
+      subscription.dispose()
+      @didRemoveSubscription()
+
+  on: (eventName) ->
+    if eventName is 'contents-changed'
+      Grim.deprecate("Use Directory::onDidChange instead")
+
+    EmitterMixin::on.apply(this, arguments)
+
+  ###
+  Section: Directory Metadata
+  ###
+
+  # Public: Returns a {Boolean}, always false.
+  isFile: -> false
+
+  # Public: Returns a {Boolean}, always true.
+  isDirectory: -> true
+
+  # Public: Return a {Boolean}, true if this {Directory} is the root directory
+  # of the filesystem, or false if it isn't.
+  isRoot: ->
+    @getParent().getRealPathSync() is @getRealPathSync()
+
+  ###
+  Section: Managing Paths
+  ###
+
+  # Public: Returns the directory's {String} path.
   #
   # This may include unfollowed symlinks or relative directory entries. Or it
   # may be fully resolved, it depends on what you give it.
   getPath: -> @path
 
-  # Public: Distinguishes Files from Directories during traversal.
-  isFile: -> false
-
-  # Public: Distinguishes Files from Directories during traversal.
-  isDirectory: -> true
-
-  # Public: Traverse within this Directory to a child File. This method doesn't
-  # actually check to see if the File exists, it just creates the File object.
-  #
-  # filename - The name of a File within this Directory.
-  getFile: (filename...) ->
-    new File(path.join @getPath(), filename...)
-
-  # Public: Traverse within this a Directory to a child Directory. This method
-  # doesn't actually check to see if the Directory exists, it just creates the
-  # Directory object.
-  #
-  # dirname - The name of the child Directory.
-  getSubdirectory: (dirname...) ->
-    new Directory(path.join @path, dirname...)
-
-  # Public: Traverse to the parent Directory.
-  getParent: ->
-    new Directory(path.join @path, '..')
-
-  # Public: Return true if this {Directory} is the root directory of the
-  # filesystem, or false if it isn't.
-  isRoot: ->
-    @getParent().getRealPathSync() is @getRealPathSync()
-
-  # Public: Returns this directory's completely resolved path.
+  # Public: Returns this directory's completely resolved {String} path.
   #
   # All relative directory entries are removed and symlinks are resolved to
   # their final destination.
@@ -83,33 +112,12 @@ class Directory
         @lowerCaseRealPath = @lowerCasePath if fs.isCaseInsensitive()
     @realPath
 
-  # Public: Returns whether the given path (real or symbolic) is inside this
-  # directory. This method does not actually check if the path exists, it just
-  # checks if the path is under this directory.
-  contains: (pathToCheck) ->
-    return false unless pathToCheck
+  # Public: Returns the {String} basename of the directory.
+  getBaseName: ->
+    path.basename(@path)
 
-    # Normalize forward slashes to back slashes on windows
-    pathToCheck = pathToCheck.replace(/\//g, '\\') if process.platform is 'win32'
-
-    if fs.isCaseInsensitive()
-      directoryPath = @lowerCasePath
-      pathToCheck = pathToCheck.toLowerCase()
-    else
-      directoryPath = @path
-
-    return true if @isPathPrefixOf(directoryPath, pathToCheck)
-
-    # Check real path
-    @getRealPathSync()
-    if fs.isCaseInsensitive()
-      directoryPath = @lowerCaseRealPath
-    else
-      directoryPath = @realPath
-
-    @isPathPrefixOf(directoryPath, pathToCheck)
-
-  # Public: Returns the relative path to the given path from this directory.
+  # Public: Returns the relative {String} path to the given path from this
+  # directory.
   relativize: (fullPath) ->
     return fullPath unless fullPath
 
@@ -142,6 +150,35 @@ class Directory
     else
       fullPath
 
+  ###
+  Section: Traversing
+  ###
+
+  # Public: Traverse to the parent directory.
+  #
+  # Returns a {Directory}.
+  getParent: ->
+    new Directory(path.join @path, '..')
+
+  # Public: Traverse within this Directory to a child File. This method doesn't
+  # actually check to see if the File exists, it just creates the File object.
+  #
+  # * `filename` The {String} name of a File within this Directory.
+  #
+  # Returns a {File}.
+  getFile: (filename...) ->
+    new File(path.join @getPath(), filename...)
+
+  # Public: Traverse within this a Directory to a child Directory. This method
+  # doesn't actually check to see if the Directory exists, it just creates the
+  # Directory object.
+  #
+  # * `dirname` The {String} name of the child Directory.
+  #
+  # Returns a {Directory}.
+  getSubdirectory: (dirname...) ->
+    new Directory(path.join @path, dirname...)
+
   # Public: Reads file entries in this directory from disk synchronously.
   #
   # Returns an {Array} of {File} and {Directory} objects.
@@ -163,8 +200,9 @@ class Directory
 
   # Public: Reads file entries in this directory from disk asynchronously.
   #
-  # callback - A {Function} to call with an {Error} as the 1st argument and
-  #            an {Array} of {File} and {Directory} objects as the 2nd argument.
+  # * `callback` A {Function} to call with the following arguments:
+  #   * `error` An {Error}, may be null.
+  #   * `entries` An {Array} of {File} and {Directory} objects.
   getEntries: (callback) ->
     fs.list @path, (error, entries) ->
       return callback(error) if error?
@@ -189,9 +227,41 @@ class Directory
       async.eachLimit entries, 1, statEntry, ->
         callback(null, directories.concat(files))
 
+  # Public: Returns whether the given path (real or symbolic) is inside this
+  # directory. This method does not actually check if the path exists, it just
+  # checks if the path is under this directory.
+  contains: (pathToCheck) ->
+    return false unless pathToCheck
+
+    # Normalize forward slashes to back slashes on windows
+    pathToCheck = pathToCheck.replace(/\//g, '\\') if process.platform is 'win32'
+
+    if fs.isCaseInsensitive()
+      directoryPath = @lowerCasePath
+      pathToCheck = pathToCheck.toLowerCase()
+    else
+      directoryPath = @path
+
+    return true if @isPathPrefixOf(directoryPath, pathToCheck)
+
+    # Check real path
+    @getRealPathSync()
+    if fs.isCaseInsensitive()
+      directoryPath = @lowerCaseRealPath
+    else
+      directoryPath = @realPath
+
+    @isPathPrefixOf(directoryPath, pathToCheck)
+
+  ###
+  Section: Private
+  ###
+
   subscribeToNativeChangeEvents: ->
     @watchSubscription ?= PathWatcher.watch @path, (eventType) =>
-      @emit "contents-changed" if eventType is "change"
+      if eventType is 'change'
+        @emit 'contents-changed'
+        @emitter.emit 'did-change'
 
   unsubscribeFromNativeChangeEvents: ->
     if @watchSubscription?

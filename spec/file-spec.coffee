@@ -14,9 +14,13 @@ describe 'File', ->
     file = new File(filePath)
 
   afterEach ->
-    file.off()
+    file.unsubscribeFromNativeChangeEvents()
     fs.removeSync(filePath)
     PathWatcher.closeAllWatchers()
+
+  it "normalizes the specified path", ->
+    expect(new File(__dirname + path.sep + 'fixtures' + path.sep + 'abc' + path.sep + '..' + path.sep + 'file-test.txt').getBaseName()).toBe 'file-test.txt'
+    expect(new File(__dirname + path.sep + 'fixtures' + path.sep + 'abc' + path.sep + '..' + path.sep + 'file-test.txt').path.toLowerCase()).toBe file.path.toLowerCase()
 
   it 'returns true from isFile()', ->
     expect(file.isFile()).toBe true
@@ -26,16 +30,16 @@ describe 'File', ->
 
   describe "when the file has not been read", ->
     describe "when the contents of the file change", ->
-      it "triggers 'contents-changed' event handlers", ->
-        file.on 'contents-changed', changeHandler = jasmine.createSpy('changeHandler')
+      it "notifies ::onDidChange observers", ->
+        file.onDidChange changeHandler = jasmine.createSpy('changeHandler')
         fs.writeFileSync(file.getPath(), "this is new!")
 
         waitsFor "change event", ->
           changeHandler.callCount > 0
 
     describe "when the contents of the file are deleted", ->
-      it "triggers 'contents-changed' event handlers", ->
-        file.on 'contents-changed', changeHandler = jasmine.createSpy('changeHandler')
+      it "notifies ::onDidChange observers", ->
+        file.onDidChange changeHandler = jasmine.createSpy('changeHandler')
         fs.writeFileSync(file.getPath(), "")
 
         waitsFor "change event", ->
@@ -46,9 +50,9 @@ describe 'File', ->
       file.readSync()
 
     describe "when the contents of the file change", ->
-      it "triggers 'contents-changed' event handlers", ->
+      it "notifies ::onDidChange observers", ->
         changeHandler = jasmine.createSpy('changeHandler')
-        file.on 'contents-changed', changeHandler
+        file.onDidChange changeHandler
         fs.writeFileSync(file.getPath(), "this is new!")
 
         waitsFor "change event", ->
@@ -61,14 +65,14 @@ describe 'File', ->
         waitsFor "second change event", ->
           changeHandler.callCount > 0
 
-    describe "when the file is removed", ->
-      it "triggers 'remove' event handlers", ->
-        removeHandler = jasmine.createSpy('removeHandler')
-        file.on 'removed', removeHandler
+    describe "when the file is deleted", ->
+      it "notifies ::onDidDelete observers", ->
+        deleteHandler = jasmine.createSpy('deleteHandler')
+        file.onDidDelete(deleteHandler)
         fs.removeSync(file.getPath())
 
         waitsFor "remove event", ->
-          removeHandler.callCount > 0
+          deleteHandler.callCount > 0
 
     describe "when a file is moved (via the filesystem)", ->
       newPath = null
@@ -79,9 +83,9 @@ describe 'File', ->
       afterEach ->
         if fs.existsSync(newPath)
           fs.removeSync(newPath)
-          removeHandler = jasmine.createSpy('removeHandler')
-          file.on 'removed', removeHandler
-          waitsFor "remove event", 30000, -> removeHandler.callCount > 0
+          deleteHandler = jasmine.createSpy('deleteHandler')
+          file.onDidDelete(deleteHandler)
+          waitsFor "remove event", 30000, -> deleteHandler.callCount > 0
 
       it "it updates its path", ->
         moveHandler = jasmine.createSpy('moveHandler')
@@ -95,13 +99,13 @@ describe 'File', ->
         runs ->
           expect(file.getPath()).toBe newPath
 
-      it "maintains 'contents-changed' events set on previous path", ->
+      it "maintains ::onDidChange observers that were subscribed on the previous path", ->
         moveHandler = null
         moveHandler = jasmine.createSpy('moveHandler')
         file.on 'moved', moveHandler
         changeHandler = null
         changeHandler = jasmine.createSpy('changeHandler')
-        file.on 'contents-changed', changeHandler
+        file.onDidChange changeHandler
 
         fs.moveSync(filePath, newPath)
 
@@ -118,9 +122,9 @@ describe 'File', ->
     describe "when a file is deleted and the recreated within a small amount of time (git sometimes does this)", ->
       it "triggers a contents change event if the contents change", ->
         changeHandler = jasmine.createSpy("file changed")
-        removeHandler = jasmine.createSpy("file removed")
-        file.on 'contents-changed', changeHandler
-        file.on 'removed', removeHandler
+        deleteHandler = jasmine.createSpy("file deleted")
+        file.onDidChange changeHandler
+        file.onDidDelete deleteHandler
 
         expect(changeHandler).not.toHaveBeenCalled()
 
@@ -136,7 +140,7 @@ describe 'File', ->
           changeHandler.callCount == 1
 
         runs ->
-          expect(removeHandler).not.toHaveBeenCalled()
+          expect(deleteHandler).not.toHaveBeenCalled()
           fs.writeFileSync(filePath, "Hallelujah!")
           changeHandler.reset()
 

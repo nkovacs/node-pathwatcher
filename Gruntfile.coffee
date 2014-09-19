@@ -53,15 +53,25 @@ module.exports = (grunt) ->
           stderr: true
           failOnError: true
 
+      'update-atomdoc':
+        command: 'npm update grunt-atomdoc'
+        options:
+          stdout: true
+          stderr: true
+          failOnError: true
+
   grunt.loadNpmTasks('grunt-contrib-coffee')
   grunt.loadNpmTasks('grunt-shell')
   grunt.loadNpmTasks('grunt-coffeelint')
   grunt.loadNpmTasks('node-cpplint')
+  grunt.loadNpmTasks('grunt-atomdoc')
+
   grunt.registerTask('lint', ['coffeelint', 'cpplint'])
   grunt.registerTask('default', ['coffee', 'lint', 'shell:rebuild'])
   grunt.registerTask('test', ['default', 'shell:test'])
-  grunt.registerTask('prepublish', ['clean', 'coffee', 'lint'])
+  grunt.registerTask('prepublish', ['clean', 'coffee', 'lint', 'shell:update-atomdoc', 'atomdoc'])
   grunt.registerTask 'clean', ->
     rm = require('rimraf').sync
     rm 'build'
     rm 'lib'
+    rm 'api.json'
